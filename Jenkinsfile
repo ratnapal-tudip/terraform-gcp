@@ -1,18 +1,11 @@
-// ─────────────────────────────────────────────────────────────
-// Jenkinsfile — Ratnapal CI/CD Pipeline
-// Triggered by: GitHub webhook push
-// Flow: Build 4 Docker images → Push to Artifact Registry → SSH deploy to backend VM
-// ─────────────────────────────────────────────────────────────
-
 pipeline {
     agent any
 
-    environment {
-        PROJECT_ID      = "ratnapal-project"
-        REGION          = "us-central1"
-        REGISTRY        = "${REGION}-docker.pkg.dev/${PROJECT_ID}/ratnapal-images"
-        BACKEND_VM_IP   = credentials('BACKEND_VM_PRIVATE_IP')   // store in Jenkins credentials
-        GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+        environment {
+        PROJECT_ID    = "ratnapal-project"
+        REGION        = "us-central1"
+        REGISTRY      = "${REGION}-docker.pkg.dev/${PROJECT_ID}/ratnapal-images"
+        BACKEND_VM_IP = credentials('BACKEND_VM_PRIVATE_IP')
     }
 
     stages {
@@ -21,6 +14,17 @@ pipeline {
             steps {
                 echo "Checking out source code..."
                 checkout scm
+            }
+        }
+
+        stage('Set Commit Tag') {
+            steps {
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: "git rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+                }
             }
         }
 
@@ -38,8 +42,8 @@ pipeline {
                     steps {
                         sh '''
                             docker build -t ${REGISTRY}/fastapi:${GIT_COMMIT_SHORT} \
-                                         -t ${REGISTRY}/fastapi:latest \
-                                         -f ./fastapi/Dockerfile ./fastapi
+                                        -t ${REGISTRY}/fastapi:latest \
+                                        -f ./fastapi/Dockerfile ./fastapi
                         '''
                     }
                 }
@@ -47,8 +51,8 @@ pipeline {
                     steps {
                         sh '''
                             docker build -t ${REGISTRY}/django:${GIT_COMMIT_SHORT} \
-                                         -t ${REGISTRY}/django:latest \
-                                         -f ./django/Dockerfile ./django
+                                        -t ${REGISTRY}/django:latest \
+                                        -f ./django/Dockerfile ./django
                         '''
                     }
                 }
@@ -56,8 +60,8 @@ pipeline {
                     steps {
                         sh '''
                             docker build -t ${REGISTRY}/node:${GIT_COMMIT_SHORT} \
-                                         -t ${REGISTRY}/node:latest \
-                                         -f ./node/Dockerfile ./node
+                                        -t ${REGISTRY}/node:latest \
+                                        -f ./node/Dockerfile ./node
                         '''
                     }
                 }
@@ -65,8 +69,8 @@ pipeline {
                     steps {
                         sh '''
                             docker build -t ${REGISTRY}/dotnet:${GIT_COMMIT_SHORT} \
-                                         -t ${REGISTRY}/dotnet:latest \
-                                         -f ./dotnet/Dockerfile ./dotnet
+                                        -t ${REGISTRY}/dotnet:latest \
+                                        -f ./dotnet/Dockerfile ./dotnet
                         '''
                     }
                 }
@@ -112,48 +116,43 @@ pipeline {
 
         stage('Deploy to Backend VM') {
             steps {
-                // Inject updated image tags into docker-compose and deploy via SSH
-                // Jenkins VM → Backend VM via internal VPC (private IP)
-                sshagent(['backend-vm-ssh-key']) {  // add SSH key in Jenkins credentials
+                sshagent(['backend-vm-ssh-key']) {
                     sh '''
-                        # Copy docker-compose with updated registry URLs
                         scp -o StrictHostKeyChecking=no \
-                            compose.yaml \
-                            jenkins@${BACKEND_VM_IP}:/home/jenkins/
+                        compose.yaml \
+                        ratnapalshende2001_gmail_com@${BACKEND_VM_IP}:/home/ratnapalshende2001_gmail_com/
 
-                        # SSH into backend VM and redeploy
-                        ssh -o StrictHostKeyChecking=no jenkins@${BACKEND_VM_IP} << 'REMOTE'
-                            cd /home/jenkins
+                        ssh -o StrictHostKeyChecking=no ratnapalshende2001_gmail_com@${BACKEND_VM_IP} << EOF
+                            cd /home/ratnapalshende2001_gmail_com
 
-                            # Auth Docker with Artifact Registry
-                            gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+                            gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
 
-                            # Pull latest images
                             docker compose pull
-
-                            # Restart containers with zero-downtime rolling
                             docker compose up -d --remove-orphans
-
-                            # Clean up old images
                             docker image prune -f
-                        REMOTE
+                        EOF
                     '''
                 }
             }
         }
-
     }
 
     post {
         success {
-            echo "✅ Deployment successful! Commit: ${GIT_COMMIT_SHORT}"
+            echo "✅ Deployment successful! Commit: ${env.GIT_COMMIT_SHORT}"
         }
         failure {
-            echo "❌ Pipeline failed at stage. Check logs above."
+            echo "❌ Pipeline failed. Check logs above."
         }
         always {
-            // Clean up local Docker images on Jenkins VM to save disk
-            sh 'docker system prune -f || true'
+            script {
+                try {
+                    sh 'docker system prune -f'
+                } catch (err) {
+                    echo "Cleanup skipped"
+                }
+            }
         }
     }
+
 }

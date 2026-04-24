@@ -38,7 +38,7 @@ resource "google_compute_health_check" "backend_health" {
   unhealthy_threshold = 3
 
   http_health_check {
-    port         = 8000
+    port         = 80
     request_path = "/health"
   }
 }

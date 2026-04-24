@@ -118,7 +118,7 @@ pipeline {
                     sh '''
                         # Copy docker-compose with updated registry URLs
                         scp -o StrictHostKeyChecking=no \
-                            docker-compose.yml \
+                            compose.yaml \
                             jenkins@${BACKEND_VM_IP}:/home/jenkins/
 
                         # SSH into backend VM and redeploy

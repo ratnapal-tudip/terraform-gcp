@@ -48,7 +48,7 @@ resource "google_compute_backend_service" "backend_service" {
   project               = var.project_id
   name                  = "backend-vm-service"
   protocol              = "HTTP"
-  port_name             = "fastapi"
+  port_name             = "http"
   load_balancing_scheme = "EXTERNAL"
   timeout_sec           = 30
   health_checks         = [google_compute_health_check.backend_health.id]
@@ -86,7 +86,7 @@ resource "google_compute_url_map" "url_map" {
     default_service = google_compute_backend_bucket.frontend_backend.id
 
     path_rule {
-      paths   = ["/api/*", "/api"]
+      paths   = ["/api/*", "/api", "/health"]
       service = google_compute_backend_service.backend_service.id
     }
   }

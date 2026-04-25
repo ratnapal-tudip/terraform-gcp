@@ -38,12 +38,24 @@ resource "google_project_iam_member" "sa_metric_writer" {
   member  = "serviceAccount:${google_service_account.vm_sa.email}"
 }
 
+resource "google_project_iam_member" "sa_storage_admin" {
+  project = var.project_id
+  role    = "roles/storage.objectAdmin"
+  member  = "serviceAccount:${google_service_account.vm_sa.email}"
+}
+
+resource "google_project_iam_member" "sa_network_viewer" {
+  project = var.project_id
+  role    = "roles/compute.networkViewer"
+  member  = "serviceAccount:${google_service_account.vm_sa.email}"
+}
+
 # ── BACKEND VM (Private Subnet) ───────────────────────────────
 # e2-micro = free tier eligible (1 vCPU, 1GB RAM)
 resource "google_compute_instance" "backend_vm" {
   project      = var.project_id
   name         = "backend-vm"
-  machine_type = "e2-micro"  # Free tier: 1 e2-micro per month in us-central1
+  machine_type = "e2-medium" # 4GB RAM
   zone         = var.zone
   tags         = ["backend-vm"]
 
@@ -70,33 +82,36 @@ resource "google_compute_instance" "backend_vm" {
   }
 
   # Startup script: install Docker, configure auth, pull & run containers
-  # metadata_startup_script = <<-EOT
-  #   #!/bin/bash
-  #   set -e
+  metadata_startup_script = <<-EOT
+    #!/bin/bash
+    set -e
 
-  #   # ── Install Docker ──────────────────────────────────────
-  #   apt-get update -y
-  #   apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
+    # ── Install Docker ──────────────────────────────────────
+    apt-get update -y
+    apt-get install -y ca-certificates curl gnupg
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
 
-  #   curl -fsSL https://download.docker.com/linux/debian/gpg | \
-  #     gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+    ARCH=$(dpkg --print-architecture)
+    CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")
+    echo "deb [arch=$ARCH signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $CODENAME stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-  #   echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
-  #     https://download.docker.com/linux/debian $(lsb_release -cs) stable" \
-  #     > /etc/apt/sources.list.d/docker.list
+    apt-get update -y
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-  #   apt-get update -y
-  #   apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    # ── Install gcloud CLI ────────────────────────────────────
+    apt-get update && apt-get install -y ca-certificates gnupg curl
+    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+    apt-get update -y && apt-get install -y google-cloud-cli
 
-  #   systemctl enable docker
-  #   systemctl start docker
+    # ── Authenticate Docker with Artifact Registry ──────────
+    gcloud auth configure-docker ${var.region}-docker.pkg.dev --quiet
 
-  #   # ── Authenticate Docker with Artifact Registry ──────────
-  #   gcloud auth configure-docker ${var.region}-docker.pkg.dev --quiet
-
-  #   echo "Backend VM ready. Jenkins will deploy containers via docker-compose."
-  #   echo "Artifact Registry: ${var.artifact_registry_repo}"
-  # EOT
+    echo "Backend VM ready. Jenkins will deploy containers via docker-compose."
+    echo "Artifact Registry: ${var.artifact_registry_repo}"
+  EOT
 
   description = "Backend VM running 4 Docker containers in private subnet"
 }
@@ -134,72 +149,108 @@ resource "google_compute_instance" "jenkins_vm" {
     enable-oslogin = "TRUE"
   }
 
-  # Startup script: install Java, Jenkins, Docker, gcloud
-  # metadata_startup_script = <<-EOT
-  #   #!/bin/bash
-  #   set -e
+  # Startup script: install Docker, Jenkins via docker-compose, gcloud
+  metadata_startup_script = <<-EOT
+    #!/bin/bash
+    set -e
 
-  #   # ── System update ────────────────────────────────────────
-  #   apt-get update -y
-  #   apt-get install -y apt-transport-https ca-certificates curl gnupg \
-  #     lsb-release software-properties-common git wget
+    # ── System update ────────────────────────────────────────
+    apt-get update -y
+    apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release git wget
 
-  #   # ── Install Java 17 (Jenkins requirement) ────────────────
-  #   apt-get install -y openjdk-17-jdk
-  #   export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+    # ── Install Docker ────────────────────────────────────────
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
 
-  #   # ── Install Jenkins ──────────────────────────────────────
-  #   curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | \
-  #     tee /usr/share/keyrings/jenkins-keyring.asc > /dev/null
-  #   echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
-  #     https://pkg.jenkins.io/debian-stable binary/" | \
-  #     tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+    ARCH=$(dpkg --print-architecture)
+    CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")
+    echo "deb [arch=$ARCH signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $CODENAME stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-  #   apt-get update -y
-  #   apt-get install -y jenkins
+    apt-get update -y
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-  #   systemctl enable jenkins
-  #   systemctl start jenkins
+    systemctl enable docker
+    systemctl start docker
 
-  #   # ── Install Docker ────────────────────────────────────────
-  #   curl -fsSL https://download.docker.com/linux/debian/gpg | \
-  #     gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+    # ── Install gcloud CLI ────────────────────────────────────
+    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+    apt-get update -y
+    apt-get install -y google-cloud-cli
 
-  #   echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
-  #     https://download.docker.com/linux/debian $(lsb_release -cs) stable" \
-  #     > /etc/apt/sources.list.d/docker.list
+    # Configure Docker auth for Artifact Registry
+    gcloud auth configure-docker ${var.region}-docker.pkg.dev --quiet
 
-  #   apt-get update -y
-  #   apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    # ── Setup Jenkins via Docker ───────────────────────────────
+    mkdir -p /opt/jenkins
+    cd /opt/jenkins
 
-  #   systemctl enable docker
-  #   systemctl start docker
+    # Give Jenkins container permission to talk to Docker socket
+    chmod 666 /var/run/docker.sock
 
-  #   # Add jenkins user to docker group
-  #   usermod -aG docker jenkins
+    cat << 'EOF' > Dockerfile
+FROM jenkins/jenkins:lts
 
-  #   # ── Install gcloud CLI ────────────────────────────────────
-  #   echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] \
-  #     https://packages.cloud.google.com/apt cloud-sdk main" | \
-  #     tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+USER root
 
-  #   curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | \
-  #     apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+RUN apt-get update && \
+    apt-get install -y ca-certificates curl gnupg && \
+    # Add Docker official GPG key
+    install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
+    chmod a+r /etc/apt/keyrings/docker.gpg && \
+    # Add Docker repo
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+      https://download.docker.com/linux/debian \
+      $(. /etc/os-release && echo "\$VERSION_CODENAME") stable" \
+      > /etc/apt/sources.list.d/docker.list && \
+    apt-get update && \
+    # Install everything properly
+    apt-get install -y \
+      docker-ce-cli \
+      docker-buildx-plugin \
+      docker-compose-plugin && \
+    # Install GCP CLI
+    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
+    apt-get update && apt-get install -y google-cloud-cli && \
+    apt-get clean
 
-  #   apt-get update -y
-  #   apt-get install -y google-cloud-cli
+USER jenkins
 
-  #   # Configure Docker auth for Artifact Registry
-  #   gcloud auth configure-docker ${var.region}-docker.pkg.dev --quiet
+# Install nvm and Node.js v24 for the jenkins user
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash && \
+    . "$$HOME/.nvm/nvm.sh" && \
+    nvm install 24 && \
+    nvm alias default 24
+EOF
 
-  #   # Restart Jenkins to pick up docker group
-  #   systemctl restart jenkins
+    cat << 'EOF' > compose.yaml
+services:
+  jenkins:
+    build: .
+    image: my-jenkins
+    container_name: jenkins
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
 
-  #   echo "Jenkins is running on port 8080"
-  #   echo "Initial admin password: $(cat /var/lib/jenkins/secrets/initialAdminPassword)"
-  # EOT
+volumes:
+  jenkins_home: 
+EOF
 
-  # description = "Jenkins CI/CD VM in public subnet"
+    docker compose up --build -d
+
+    echo "Jenkins is starting on port 8080 via Docker"
+  EOT
+
+  description = "Jenkins CI/CD VM in public subnet"
 }
 
 # ── STATIC EXTERNAL IP for Jenkins (optional but stable) ──────
@@ -219,19 +270,7 @@ resource "google_compute_instance_group" "backend_group" {
 
   # Named ports match the Load Balancer backend service
   named_port {
-    name = "fastapi"
-    port = 8000
-  }
-  named_port {
-    name = "django"
-    port = 8001
-  }
-  named_port {
-    name = "node"
-    port = 8002
-  }
-  named_port {
-    name = "dotnet"
-    port = 8003
+    name = "http"
+    port = 80
   }
 }

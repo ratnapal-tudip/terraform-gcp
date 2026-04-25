@@ -1,7 +1,7 @@
 pipeline {
     agent any
 
-        environment {
+    environment {
         PROJECT_ID    = "ratnapal-project"
         REGION        = "us-central1"
         REGISTRY      = "${REGION}-docker.pkg.dev/${PROJECT_ID}/ratnapal-images"
@@ -42,8 +42,8 @@ pipeline {
                     steps {
                         sh '''
                             docker build -t ${REGISTRY}/fastapi:${GIT_COMMIT_SHORT} \
-                                        -t ${REGISTRY}/fastapi:latest \
-                                        -f ./fastapi/Dockerfile ./fastapi
+                                -t ${REGISTRY}/fastapi:latest \
+                                -f backend/python-fastapi/Dockerfile backend/python-fastapi
                         '''
                     }
                 }
@@ -51,8 +51,8 @@ pipeline {
                     steps {
                         sh '''
                             docker build -t ${REGISTRY}/django:${GIT_COMMIT_SHORT} \
-                                        -t ${REGISTRY}/django:latest \
-                                        -f ./django/Dockerfile ./django
+                                -t ${REGISTRY}/django:latest \
+                                -f backend/python-django/Dockerfile backend/python-django
                         '''
                     }
                 }
@@ -60,8 +60,8 @@ pipeline {
                     steps {
                         sh '''
                             docker build -t ${REGISTRY}/node:${GIT_COMMIT_SHORT} \
-                                        -t ${REGISTRY}/node:latest \
-                                        -f ./node/Dockerfile ./node
+                                -t ${REGISTRY}/node:latest \
+                                -f backend/nodejs/Dockerfile backend/nodejs
                         '''
                     }
                 }
@@ -69,8 +69,8 @@ pipeline {
                     steps {
                         sh '''
                             docker build -t ${REGISTRY}/dotnet:${GIT_COMMIT_SHORT} \
-                                        -t ${REGISTRY}/dotnet:latest \
-                                        -f ./dotnet/Dockerfile ./dotnet
+                                -t ${REGISTRY}/dotnet:latest \
+                                -f backend/dotnet-webapi/Dockerfile backend/dotnet-webapi
                         '''
                     }
                 }
@@ -114,6 +114,35 @@ pipeline {
             }
         }
 
+        stage('Build & Deploy Frontend') {
+            steps {
+                dir('frontend') {
+                    sh '''
+                        echo "Building React frontend..."
+                        
+                        # Fetch the dynamic Load Balancer IP
+                        LB_IP=$(gcloud compute addresses describe ratnapal-lb-ip --global --format="value(address)" --project=${PROJECT_ID})
+                        export VITE_API_BASE_URL="http://${LB_IP}"
+                        
+                        echo "Using API Base URL: ${VITE_API_BASE_URL}"
+                        
+                        npm install
+                        npm run build
+                        
+                        # Upload to GCS Bucket (acting as S3 for GCP)
+                        if [ -d "build" ]; then
+                            gsutil -m rsync -R build/ gs://${PROJECT_ID}-react-frontend/
+                        elif [ -d "dist" ]; then
+                            gsutil -m rsync -R dist/ gs://${PROJECT_ID}-react-frontend/
+                        else
+                            echo "Build directory not found! Expected 'build' or 'dist'."
+                            exit 1
+                        fi
+                    '''
+                }
+            }
+        }
+
         stage('Deploy to Backend VM') {
             steps {
                 sshagent(['backend-vm-ssh-key']) {
@@ -123,14 +152,14 @@ pipeline {
                         ratnapalshende2001_gmail_com@${BACKEND_VM_IP}:/home/ratnapalshende2001_gmail_com/
 
                         ssh -o StrictHostKeyChecking=no ratnapalshende2001_gmail_com@${BACKEND_VM_IP} << EOF
-                            cd /home/ratnapalshende2001_gmail_com
+cd /home/ratnapalshende2001_gmail_com
 
-                            gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
 
-                            docker compose pull
-                            docker compose up -d --remove-orphans
-                            docker image prune -f
-                        EOF
+docker compose pull
+docker compose up -d --remove-orphans
+docker image prune -f
+EOF
                     '''
                 }
             }
@@ -154,5 +183,4 @@ pipeline {
             }
         }
     }
-
 }

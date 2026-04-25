@@ -204,7 +204,7 @@ RUN apt-get update && \
     echo \
       "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
       https://download.docker.com/linux/debian \
-      $(. /etc/os-release && echo "\$VERSION_CODENAME") stable" \
+      bookworm stable" \
       > /etc/apt/sources.list.d/docker.list && \
     apt-get update && \
     # Install everything properly
@@ -218,13 +218,13 @@ RUN apt-get update && \
     apt-get update && apt-get install -y google-cloud-cli && \
     apt-get clean
 
-USER jenkins
+# Install Node.js v20
+RUN apt-get update && \
+    apt-get install -y curl ca-certificates gnupg && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs
 
-# Install nvm and Node.js v24 for the jenkins user
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash && \
-    . "$$HOME/.nvm/nvm.sh" && \
-    nvm install 24 && \
-    nvm alias default 24
+USER jenkins
 EOF
 
     cat << 'EOF' > compose.yaml

@@ -13,12 +13,12 @@ resource "google_artifact_registry_repository" "docker_repo" {
 
   cleanup_policy_dry_run = false
 
-  # Keep only last 5 versions per image to save storage cost
+  # Keep only last 2 versions per image to save storage cost
   cleanup_policies {
-    id     = "keep-5-versions"
+    id     = "keep-2-versions"
     action = "KEEP"
     most_recent_versions {
-      keep_count = 5
+      keep_count = 2
     }
   }
 }

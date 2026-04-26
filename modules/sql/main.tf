@@ -24,7 +24,7 @@ resource "google_service_networking_connection" "private_vpc_connection" {
 # ── Cloud SQL MySQL Instance ───────────────────────────────────
 resource "google_sql_database_instance" "mysql" {
   project             = var.project_id
-  name                = "ratnapal-mysql3"
+  name                = "ratnapal-mysql"
   region              = var.region
   database_version    = "MYSQL_8_0"
   deletion_protection = false # set true in production

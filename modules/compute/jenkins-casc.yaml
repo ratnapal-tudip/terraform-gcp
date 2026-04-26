@@ -1,0 +1,54 @@
+jenkins:
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "ratnapal"
+          password: "admin"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+  numExecutors: 2
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: "BACKEND_VM_PRIVATE_IP"
+              secret: "${backend_vm_ip}"
+              description: "Private IP of the Backend VM"
+          - basicSSHUserPrivateKey:
+              scope: GLOBAL
+              id: "backend-vm-ssh-key"
+              username: "ratnapalshende2001_gmail_com"
+              privateKeySource:
+                directEntry:
+                  privateKey: "${ssh_private_key}"
+              description: "SSH key for Backend VM"
+
+jobs:
+  - script: |
+      pipelineJob('cloud-3tier-pipeline') {
+        triggers {
+          githubPush()
+        }
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/ratnapal-tudip/cloud-3tier-project.git')
+                }
+                branches('*/main')
+              }
+            }
+            scriptPath('Jenkinsfile')
+          }
+        }
+      }
+
+unclassified:
+  location:
+    url: "http://localhost:8080/"

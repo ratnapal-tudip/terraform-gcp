@@ -4,7 +4,7 @@
 # - Cloud CDN for frontend (GCS bucket)
 # - Backend service pointing to backend VM instance group
 # - URL map: /api/* → backend VM, /* → GCS bucket (React)
-###############################################################
+###############################################################++++++++
 
 # ── Global Static IP ──────────────────────────────────────────
 resource "google_compute_global_address" "lb_ip" {
@@ -68,8 +68,8 @@ resource "google_compute_backend_service" "backend_service" {
 # ── URL Map ───────────────────────────────────────────────────
 # /api/fastapi/* → FastAPI (port 8000)
 # /api/django/*  → Django  (port 8001)
-# /api/node/*    → Node    (port 8002)
-# /api/dotnet/*  → .Net    (port 8003)
+# /api/node/*    → Node    (port 3000)
+# /api/dotnet/*  → .Net    (port 5000)
 # /*             → React frontend (GCS bucket via CDN)
 resource "google_compute_url_map" "url_map" {
   project         = var.project_id

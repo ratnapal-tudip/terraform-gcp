@@ -2,7 +2,7 @@
 # MODULE: COMPUTE
 # - Service Account for VMs
 # - Backend VM (private subnet) — runs 4 Docker containers
-# - Jenkins VM (public subnet)  — CI/CD pipeline
+# - Jenkins VM (public subnet)  — CI/CD pipeline (fully automated via JCasC)
 # - Unmanaged Instance Groups for Load Balancer
 ###############################################################
 
@@ -51,7 +51,7 @@ resource "google_project_iam_member" "sa_network_viewer" {
 }
 
 # ── BACKEND VM (Private Subnet) ───────────────────────────────
-# e2-micro = free tier eligible (1 vCPU, 1GB RAM)
+# e2-micro = free tier eligible (1 vCPU, 1GB RAM) (changed because it was lagging)
 resource "google_compute_instance" "backend_vm" {
   project      = var.project_id
   name         = "backend-vm"
@@ -77,8 +77,9 @@ resource "google_compute_instance" "backend_vm" {
     scopes = ["cloud-platform"]
   }
 
+  # Use metadata SSH keys instead of OS Login for Jenkins SSH access
   metadata = {
-    enable-oslogin = "TRUE"
+    ssh-keys = "ratnapalshende2001_gmail_com:ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJJBC8y7JXRGQWrTKDLnALbkHFZ8AuLoeATbIitlgkMV ratnapal"
   }
 
   # Startup script: install Docker, configure auth, pull & run containers
@@ -117,7 +118,7 @@ resource "google_compute_instance" "backend_vm" {
 }
 
 # ── JENKINS VM (Public Subnet) ────────────────────────────────
-# e2-micro — Jenkins can run on it for small workloads
+# Fully automated: JCasC configures user, credentials, pipeline, plugins
 resource "google_compute_instance" "jenkins_vm" {
   project      = var.project_id
   name         = "jenkins-vm"
@@ -149,7 +150,7 @@ resource "google_compute_instance" "jenkins_vm" {
     enable-oslogin = "TRUE"
   }
 
-  # Startup script: install Docker, Jenkins via docker-compose, gcloud
+  # Startup script: install Docker, build Jenkins image with JCasC, launch
   metadata_startup_script = <<-EOT
     #!/bin/bash
     set -e
@@ -182,21 +183,39 @@ resource "google_compute_instance" "jenkins_vm" {
     # Configure Docker auth for Artifact Registry
     gcloud auth configure-docker ${var.region}-docker.pkg.dev --quiet
 
-    # ── Setup Jenkins via Docker ───────────────────────────────
+    # ── Setup Jenkins via Docker (fully automated) ─────────────
     mkdir -p /opt/jenkins
     cd /opt/jenkins
 
     # Give Jenkins container permission to talk to Docker socket
     chmod 666 /var/run/docker.sock
 
-    cat << 'EOF' > Dockerfile
+    # ── Write plugins list ──────────────────────────────────────
+    cat << 'PLUGINS' > plugins.txt
+configuration-as-code
+workflow-aggregator
+git
+github
+github-branch-source
+ssh-agent
+ssh-credentials
+credentials
+credentials-binding
+job-dsl
+pipeline-stage-view
+docker-workflow
+docker-plugin
+dark-theme
+PLUGINS
+
+    # ── Write Dockerfile ─────────────────────────────────────────
+    cat << 'DOCKERFILE' > Dockerfile
 FROM jenkins/jenkins:lts
 
 USER root
 
 RUN apt-get update && \
     apt-get install -y ca-certificates curl gnupg && \
-    # Add Docker official GPG key
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
@@ -224,10 +243,88 @@ RUN apt-get update && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
 
-USER jenkins
-EOF
+# Install plugins from list
+COPY plugins.txt /usr/share/jenkins/ref/plugins.txt
+RUN jenkins-plugin-cli --plugin-file /usr/share/jenkins/ref/plugins.txt
 
-    cat << 'EOF' > compose.yaml
+# Skip setup wizard
+ENV JAVA_OPTS="-Djenkins.install.runSetupWizard=false"
+ENV CASC_JENKINS_CONFIG="/var/jenkins_config/casc.yaml"
+
+USER jenkins
+DOCKERFILE
+
+    # ── Write JCasC configuration ────────────────────────────────
+    cat << 'CASC' > casc.yaml
+jenkins:
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "ratnapal"
+          password: "admin"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+  numExecutors: 2
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: "BACKEND_VM_PRIVATE_IP"
+              secret: "PLACEHOLDER_BACKEND_IP"
+              description: "Private IP of the Backend VM"
+          - basicSSHUserPrivateKey:
+              scope: GLOBAL
+              id: "backend-vm-ssh-key"
+              username: "ratnapalshende2001_gmail_com"
+              privateKeySource:
+                directEntry:
+                  privateKey: |
+                    -----BEGIN OPENSSH PRIVATE KEY-----
+                    b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+                    QyNTUxOQAAACCSQQvMuyV0RkFq0ygy5wC25BxWfALi6HgE2yIrZYJDFQAAAJDBGkcdwRpH
+                    HQAAAAtzc2gtZWQyNTUxOQAAACCSQQvMuyV0RkFq0ygy5wC25BxWfALi6HgE2yIrZYJDFQ
+                    AAAECk8YFJiHu5NrAjBso/vbqkVFoAG/RHpRmJrWN6Lir7AZJBC8y7JXRGQWrTKDLnALbk
+                    HFZ8AuLoeATbIitlgkMVAAAACHJhdG5hcGFsAQIDBAU=
+                    -----END OPENSSH PRIVATE KEY-----
+              description: "SSH key for Backend VM"
+
+jobs:
+  - script: |
+      pipelineJob('cloud-3tier-pipeline') {
+        triggers {
+          githubPush()
+        }
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/ratnapal-tudip/cloud-3tier-project.git')
+                }
+                branches('*/main')
+              }
+            }
+            scriptPath('Jenkinsfile')
+          }
+        }
+      }
+
+unclassified:
+  location:
+    url: "http://localhost:8080/"
+CASC
+
+    # ── Replace placeholder with actual backend VM IP ────────────
+    BACKEND_IP="${google_compute_instance.backend_vm.network_interface[0].network_ip}"
+    sed -i "s|PLACEHOLDER_BACKEND_IP|$BACKEND_IP|g" casc.yaml
+
+    # ── Write docker-compose file ────────────────────────────────
+    cat << 'COMPOSE' > compose.yaml
 services:
   jenkins:
     build: .
@@ -237,27 +334,26 @@ services:
     ports:
       - "8080:8080"
       - "50000:50000"
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+      - CASC_JENKINS_CONFIG=/var/jenkins_config/casc.yaml
     volumes:
       - jenkins_home:/var/jenkins_home
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./casc.yaml:/var/jenkins_config/casc.yaml:ro
 
 volumes:
-  jenkins_home: 
-EOF
+  jenkins_home:
+COMPOSE
 
+    # ── Build and launch Jenkins ─────────────────────────────────
     docker compose up --build -d
 
-    echo "Jenkins is starting on port 8080 via Docker"
+    echo "Jenkins is starting on port 8080 with full automation (JCasC)"
+    echo "User: ratnapal | Backend VM IP: $BACKEND_IP"
   EOT
 
-  description = "Jenkins CI/CD VM in public subnet"
-}
-
-# ── STATIC EXTERNAL IP for Jenkins (optional but stable) ──────
-resource "google_compute_address" "jenkins_ip" {
-  project = var.project_id
-  name    = "jenkins-static-ip"
-  region  = var.region
+  description = "Jenkins CI/CD VM in public subnet (automated via JCasC)"
 }
 
 # ── UNMANAGED INSTANCE GROUP for Backend VM ───────────────────
